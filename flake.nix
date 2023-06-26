@@ -33,7 +33,7 @@
           z3
           cvc5
           git
-          foundry.defaultPackage.${system}
+          # foundry.defaultPackage.${system}
         ];
 
         # custom package set capable of building latest (unreleased) `cabal-install`.
@@ -92,12 +92,12 @@
             (haskell.lib.compose.appendConfigureFlags (
               [ "-fci"
                 "-O2"
-                "--extra-lib-dirs=${stripDylib (pkgs.gmp.override { withStatic = true; })}/lib"
-                "--extra-lib-dirs=${stripDylib secp256k1-static}/lib"
-                "--extra-lib-dirs=${stripDylib (libff.override { enableStatic = true; })}/lib"
-                "--extra-lib-dirs=${zlib.static}/lib"
-                "--extra-lib-dirs=${stripDylib (libffi.overrideAttrs (_: { dontDisableStatic = true; }))}/lib"
-                "--extra-lib-dirs=${stripDylib (ncurses.override { enableStatic = true; })}/lib"
+                # "--extra-lib-dirs=${stripDylib (pkgs.gmp.override { withStatic = true; })}/lib"
+                # "--extra-lib-dirs=${stripDylib secp256k1-static}/lib"
+                # "--extra-lib-dirs=${stripDylib (libff.override { enableStatic = true; })}/lib"
+                # "--extra-lib-dirs=${zlib.static}/lib"
+                # "--extra-lib-dirs=${stripDylib (libffi.overrideAttrs (_: { dontDisableStatic = true; }))}/lib"
+                # "--extra-lib-dirs=${stripDylib (ncurses.override { enableStatic = true; })}/lib"
               ]
               ++ lib.optionals stdenv.isLinux [
                 "--enable-executable-static"
