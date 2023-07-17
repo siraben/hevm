@@ -23,6 +23,7 @@ import EVM.Solidity
 import EVM.Types
 import EVM.Sign qualified
 
+import Control.Monad.ST (ST)
 import Control.Monad.State.Strict hiding (state)
 import Data.Bits (FiniteBits, countLeadingZeros, finiteBitSize)
 import Data.ByteArray qualified as BA
@@ -48,6 +49,8 @@ import Data.Typeable
 import Data.Vector qualified as V
 import Data.Vector.Storable qualified as SV
 import Data.Vector.Storable.Mutable qualified as SV
+import Data.Vector.Unboxed qualified as VUnboxed
+import Data.Vector.Unboxed.Mutable qualified as VUnboxed.Mutable
 import Data.Word (Word8, Word32, Word64)
 import Witch (into, unsafeInto)
 
@@ -55,22 +58,24 @@ import Crypto.Hash (Digest, SHA256, RIPEMD160)
 import Crypto.Hash qualified as Crypto
 import Crypto.Number.ModArithmetic (expFast)
 
-blankState :: FrameState
-blankState = FrameState
-  { contract     = 0
-  , codeContract = 0
-  , code         = RuntimeCode (ConcreteRuntimeCode "")
-  , pc           = 0
-  , stack        = mempty
-  , memory       = mempty
-  , memorySize   = 0
-  , calldata     = mempty
-  , callvalue    = Lit 0
-  , caller       = Lit 0
-  , gas          = 0
-  , returndata   = mempty
-  , static       = False
-  }
+blankState :: ST s (FrameState s)
+blankState = do
+  memory <- ConcreteMemory <$> VUnboxed.Mutable.new 0
+  pure $ FrameState
+    { contract     = 0
+    , codeContract = 0
+    , code         = RuntimeCode (ConcreteRuntimeCode "")
+    , pc           = 0
+    , stack        = mempty
+    , memory
+    , memorySize   = 0
+    , calldata     = mempty
+    , callvalue    = Lit 0
+    , caller       = Lit 0
+    , gas          = 0
+    , returndata   = mempty
+    , static       = False
+    }
 
 -- | An "external" view of a contract's bytecode, appropriate for
 -- e.g. @EXTCODEHASH@.
@@ -82,79 +87,79 @@ bytecode = #contractcode % to f
 
 -- * Data accessors
 
-currentContract :: VM -> Maybe Contract
+currentContract :: VM s -> Maybe Contract
 currentContract vm =
   Map.lookup vm.state.codeContract vm.env.contracts
 
 -- * Data constructors
 
-makeVm :: VMOpts -> VM
-makeVm o =
+makeVm :: VMOpts -> ST s (VM s)
+makeVm o = do
   let txaccessList = o.txAccessList
       txorigin = o.origin
       txtoAddr = o.address
       initialAccessedAddrs = fromList $ [txorigin, txtoAddr, o.coinbase] ++ [1..9] ++ (Map.keys txaccessList)
       initialAccessedStorageKeys = fromList $ foldMap (uncurry (map . (,))) (Map.toList txaccessList)
       touched = if o.create then [txorigin] else [txorigin, txtoAddr]
-  in
-  VM
-  { result = Nothing
-  , frames = mempty
-  , tx = TxState
-    { gasprice = o.gasprice
-    , gaslimit = o.gaslimit
-    , priorityFee = o.priorityFee
-    , origin = txorigin
-    , toAddr = txtoAddr
-    , value = o.value
-    , substate = SubState mempty touched initialAccessedAddrs initialAccessedStorageKeys mempty
-    --, _accessList = txaccessList
-    , isCreate = o.create
-    , txReversion = Map.fromList
-      [(o.address , o.contract )]
+  memory <- ConcreteMemory <$> VUnboxed.Mutable.new 0
+  pure $ VM
+    { result = Nothing
+    , frames = mempty
+    , tx = TxState
+      { gasprice = o.gasprice
+      , gaslimit = o.gaslimit
+      , priorityFee = o.priorityFee
+      , origin = txorigin
+      , toAddr = txtoAddr
+      , value = o.value
+      , substate = SubState mempty touched initialAccessedAddrs initialAccessedStorageKeys mempty
+      --, _accessList = txaccessList
+      , isCreate = o.create
+      , txReversion = Map.fromList
+        [(o.address , o.contract )]
+      }
+    , logs = []
+    , traces = Zipper.fromForest []
+    , block = Block
+      { coinbase = o.coinbase
+      , timestamp = o.timestamp
+      , number = o.number
+      , prevRandao = o.prevRandao
+      , maxCodeSize = o.maxCodeSize
+      , gaslimit = o.blockGaslimit
+      , baseFee = o.baseFee
+      , schedule = o.schedule
+      }
+    , state = FrameState
+      { pc = 0
+      , stack = mempty
+      , memory
+      , memorySize = 0
+      , code = o.contract.contractcode
+      , contract = o.address
+      , codeContract = o.address
+      , calldata = fst o.calldata
+      , callvalue = o.value
+      , caller = o.caller
+      , gas = o.gas
+      , returndata = mempty
+      , static = False
+      }
+    , env = Env
+      { chainId = o.chainId
+      , storage = o.initialStorage
+      , origStorage = mempty
+      , contracts = Map.fromList
+        [(o.address, o.contract )]
+      }
+    , cache = Cache mempty mempty mempty
+    , burned = 0
+    , constraints = snd o.calldata
+    , keccakEqs = mempty
+    , iterations = mempty
+    , allowFFI = o.allowFFI
+    , overrideCaller = Nothing
     }
-  , logs = []
-  , traces = Zipper.fromForest []
-  , block = Block
-    { coinbase = o.coinbase
-    , timestamp = o.timestamp
-    , number = o.number
-    , prevRandao = o.prevRandao
-    , maxCodeSize = o.maxCodeSize
-    , gaslimit = o.blockGaslimit
-    , baseFee = o.baseFee
-    , schedule = o.schedule
-    }
-  , state = FrameState
-    { pc = 0
-    , stack = mempty
-    , memory = mempty
-    , memorySize = 0
-    , code = o.contract.contractcode
-    , contract = o.address
-    , codeContract = o.address
-    , calldata = fst o.calldata
-    , callvalue = o.value
-    , caller = o.caller
-    , gas = o.gas
-    , returndata = mempty
-    , static = False
-    }
-  , env = Env
-    { chainId = o.chainId
-    , storage = o.initialStorage
-    , origStorage = mempty
-    , contracts = Map.fromList
-      [(o.address, o.contract )]
-    }
-  , cache = Cache mempty mempty mempty
-  , burned = 0
-  , constraints = snd o.calldata
-  , keccakEqs = mempty
-  , iterations = mempty
-  , allowFFI = o.allowFFI
-  , overrideCaller = Nothing
-  }
 
 -- | Initialize empty contract with given code
 initialContract :: ContractCode -> Contract
@@ -174,17 +179,16 @@ initialContract contractCode = Contract
 -- * Opcode dispatch (exec1)
 
 -- | Update program counter
-next :: (?op :: Word8) => EVM ()
+next :: (?op :: Word8) => EVM s ()
 next = modifying (#state % #pc) (+ (opSize ?op))
 
 -- | Executes the EVM one step
-exec1 :: EVM ()
+exec1 :: EVM s ()
 exec1 = do
   vm <- get
 
   let
     -- Convenient aliases
-    mem  = vm.state.memory
     stk  = vm.state.stack
     self = vm.state.contract
     this = fromMaybe (internalError "state contract") (Map.lookup self vm.env.contracts)
@@ -278,8 +282,8 @@ exec1 = do
               then underrun
               else
                 forceConcrete2 (xOffset', xSize') "LOG" $ \(xOffset, xSize) -> do
+                    bytes <- readMemory xOffset' xSize'
                     let (topics, xs') = splitAt (into n) xs
-                        bytes         = readMemory xOffset' xSize' vm
                         logs'         = (LogEntry (litAddr self) bytes topics) : vm.logs
                     burn (g_log + g_logdata * (unsafeInto xSize) + into n * g_logtopic) $
                       accessMemoryRange xOffset xSize $ do
@@ -333,14 +337,14 @@ exec1 = do
                 \xOffset -> forceConcrete xSize' "sha3 size must be concrete" $ \xSize ->
                   burn (g_sha3 + g_sha3word * ceilDiv (unsafeInto xSize) 32) $
                     accessMemoryRange xOffset xSize $ do
-                      hash <- case readMemory xOffset' xSize' vm of
-                                          ConcreteBuf bs -> do
-                                            let hash' = keccak' bs
-                                            eqs <- use #keccakEqs
-                                            assign #keccakEqs $
-                                              PEq (Lit hash') (Keccak (ConcreteBuf bs)):eqs
-                                            pure $ Lit hash'
-                                          buf -> pure $ Keccak buf
+                      hash <- readMemory xOffset' xSize' >>= \case
+                        ConcreteBuf bs -> do
+                          let hash' = keccak' bs
+                          eqs <- use #keccakEqs
+                          assign #keccakEqs $
+                            PEq (Lit hash') (Keccak (ConcreteBuf bs)):eqs
+                          pure $ Lit hash'
+                        buf -> pure $ Keccak buf
                       next
                       assign (#state % #stack) (hash : xs)
             _ -> underrun
@@ -543,7 +547,9 @@ exec1 = do
               burn g_verylow $
                 accessMemoryWord x $ do
                   next
-                  assign (#state % #stack) (readWord (Lit x) mem : xs)
+                  buf <- readMemory (Lit x) (Lit 32)
+                  let w = Expr.readWordFromBytes (Lit 0) buf
+                  assign (#state % #stack) (w : xs)
             _ -> underrun
 
         OpMstore ->
@@ -552,7 +558,17 @@ exec1 = do
               burn g_verylow $
                 accessMemoryWord x $ do
                   next
-                  assign (#state % #memory) (writeWord (Lit x) y mem)
+                  gets (.state.memory) >>= \case
+                    ConcreteMemory mem -> do
+                      case y of
+                        Lit w ->
+                          writeMemory mem (unsafeInto x) (word256Bytes w)
+                        _ -> do
+                          -- copy out and move to symbolic memory
+                          buf <- freezeMemory mem
+                          assign (#state % #memory) (SymbolicMemory $ writeWord (Lit x) y buf)
+                    SymbolicMemory mem ->
+                      assign (#state % #memory) (SymbolicMemory $ writeWord (Lit x) y mem)
                   assign (#state % #stack) xs
             _ -> underrun
 
@@ -563,7 +579,18 @@ exec1 = do
                 accessMemoryRange x 1 $ do
                   let yByte = indexWord (Lit 31) y
                   next
-                  modifying (#state % #memory) (writeByte (Lit x) yByte)
+                  gets (.state.memory) >>= \case
+                    ConcreteMemory mem -> do
+                      case yByte of
+                        LitByte byte ->
+                          writeMemory mem (unsafeInto x) (BS.pack [byte])
+                        _ -> do
+                          -- copy out and move to symbolic memory
+                          buf <- freezeMemory mem
+                          assign (#state % #memory) (SymbolicMemory $ writeByte (Lit x) yByte buf)
+                    SymbolicMemory mem ->
+                      assign (#state % #memory) (SymbolicMemory $ writeByte (Lit x) yByte mem)
+
                   assign (#state % #stack) xs
             _ -> underrun
 
@@ -645,7 +672,7 @@ exec1 = do
           case stk of
             (x:y:xs) -> forceConcrete x "JUMPI: symbolic jumpdest" $ \x' ->
                 burn g_high $
-                  let jump :: Bool -> EVM ()
+                  let jump :: Bool -> EVM s ()
                       jump False = assign (#state % #stack) xs >> next
                       jump _    = case toInt x' of
                         Nothing -> vmError BadJumpDestination
@@ -697,7 +724,7 @@ exec1 = do
                     (cost, gas') = costOfCreate fees availableGas xSize False
                   _ <- accessAccountForGas newAddr
                   burn cost $ do
-                    let initCode = readMemory xOffset' xSize' vm
+                    initCode <- readMemory xOffset' xSize'
                     create self this xSize gas' xValue xs newAddr initCode
             _ -> underrun
 
@@ -738,8 +765,8 @@ exec1 = do
           case stk of
             xOffset':xSize':_ -> forceConcrete2 (xOffset', xSize') "RETURN" $ \(xOffset, xSize) ->
               accessMemoryRange xOffset xSize $ do
+                output <- readMemory xOffset' xSize'
                 let
-                  output = readMemory xOffset' xSize' vm
                   codesize = fromMaybe (internalError "processing opcode RETURN. Cannot return dynamically sized abstract data")
                                . maybeLitWord . bufLength $ output
                   maxsize = vm.block.maxCodeSize
@@ -785,8 +812,8 @@ exec1 = do
               \(xValue, xOffset, xSize, xSalt) ->
                 accessMemoryRange xOffset xSize $ do
                   availableGas <- use (#state % #gas)
-
-                  forceConcreteBuf (readMemory xOffset' xSize' vm) "CREATE2" $
+                  buf <- readMemory xOffset' xSize'
+                  forceConcreteBuf buf "CREATE2" $
                     \initCode -> do
                       let
                         newAddr  = create2Address self xSalt initCode
@@ -840,14 +867,14 @@ exec1 = do
           case stk of
             xOffset':xSize':_ -> forceConcrete2 (xOffset', xSize') "REVERT" $ \(xOffset, xSize) ->
               accessMemoryRange xOffset xSize $ do
-                let output = readMemory xOffset' xSize' vm
+                output <- readMemory xOffset' xSize'
                 finishFrame (FrameReverted output)
             _ -> underrun
 
         OpUnknown xxx ->
           vmError $ UnrecognizedOpcode xxx
 
-transfer :: Addr -> Addr -> W256 -> EVM ()
+transfer :: Addr -> Addr -> W256 -> EVM s ()
 transfer _ _ 0 = pure ()
 transfer xFrom xTo xValue = do
     sb <- preuse $ #env % #contracts % ix xFrom % #balance
@@ -865,8 +892,8 @@ callChecks
   :: (?op :: Word8)
   => Contract -> Word64 -> Addr -> Addr -> W256 -> W256 -> W256 -> W256 -> W256 -> [Expr EWord]
    -- continuation with gas available for call
-  -> (Word64 -> EVM ())
-  -> EVM ()
+  -> (Word64 -> EVM s ())
+  -> EVM s ()
 callChecks this xGas xContext xTo xValue xInOffset xInSize xOutOffset xOutSize xs continue = do
   vm <- get
   let fees = vm.block.schedule
@@ -899,7 +926,7 @@ precompiledContract
   -> W256
   -> W256 -> W256 -> W256 -> W256
   -> [Expr EWord]
-  -> EVM ()
+  -> EVM s ()
 precompiledContract this xGas precompileAddr recipient xValue inOffset inSize outOffset outSize xs =
   callChecks this xGas recipient precompileAddr xValue inOffset inSize outOffset outSize xs $ \gas' ->
   do
@@ -926,11 +953,11 @@ executePrecompile
   :: (?op :: Word8)
   => Addr
   -> Word64 -> W256 -> W256 -> W256 -> W256 -> [Expr EWord]
-  -> EVM ()
+  -> EVM s ()
 executePrecompile preCompileAddr gasCap inOffset inSize outOffset outSize xs  = do
   vm <- get
-  let input = readMemory (Lit inOffset) (Lit inSize) vm
-      fees = vm.block.schedule
+  input <- readMemory (Lit inOffset) (Lit inSize)
+  let fees = vm.block.schedule
       cost = costOfPrecompile fees preCompileAddr input
       notImplemented = internalError $ "precompile at address " <> show preCompileAddr <> " not yet implemented"
       precompileFail = burn (gasCap - cost) $ do
@@ -987,7 +1014,7 @@ executePrecompile preCompileAddr gasCap inOffset inSize outOffset outSize xs  = 
       0x4 -> do
           assign (#state % #stack) (Lit 1 : xs)
           assign (#state % #returndata) input
-          copyCallBytesToMemory input (Lit outSize) (Lit 0) (Lit outOffset)
+          copyCallBytesToMemory input (Lit outSize) (Lit outOffset)
           next
 
       -- MODEXP
@@ -1109,16 +1136,16 @@ pushTo f x = f %= (x :)
 pushToSequence :: MonadState s m => Setter s s (Seq a) (Seq a) -> a -> m ()
 pushToSequence f x = f %= (Seq.|> x)
 
-getCodeLocation :: VM -> CodeLocation
+getCodeLocation :: VM s -> CodeLocation
 getCodeLocation vm = (vm.state.contract, vm.state.pc)
 
-query :: Query -> EVM ()
+query :: Query s -> EVM s ()
 query = assign #result . Just . HandleEffect . Query
 
-choose :: Choose -> EVM ()
+choose :: Choose s -> EVM s ()
 choose = assign #result . Just . HandleEffect . Choose
 
-branch :: CodeLocation -> Expr EWord -> (Bool -> EVM ()) -> EVM ()
+branch :: CodeLocation -> Expr EWord -> (Bool -> EVM s ()) -> EVM s ()
 branch loc cond continue = do
   pathconds <- use #constraints
   query $ PleaseAskSMT condSimp pathconds choosePath
@@ -1137,7 +1164,7 @@ branch loc cond continue = do
       choose . PleaseChoosePath condSimp $ choosePath . Case
 
 -- | Construct RPC Query and halt execution until resolved
-fetchAccount :: Addr -> (Contract -> EVM ()) -> EVM ()
+fetchAccount :: Addr -> (Contract -> EVM s ()) -> EVM s ()
 fetchAccount addr continue =
   use (#env % #contracts % at addr) >>= \case
     Just c -> continue c
@@ -1157,8 +1184,8 @@ fetchAccount addr continue =
 accessStorage
   :: Addr
   -> Expr EWord
-  -> (Expr EWord -> EVM ())
-  -> EVM ()
+  -> (Expr EWord -> EVM s ())
+  -> EVM s ()
 accessStorage addr slot continue = do
   store <- (.env.storage) <$> get
   use (#env % #contracts % at addr) >>= \case
@@ -1191,7 +1218,7 @@ accessStorage addr slot continue = do
                           assign #result Nothing
                           continue (Lit x))
 
-accountExists :: Addr -> VM -> Bool
+accountExists :: Addr -> VM s -> Bool
 accountExists addr vm =
   case Map.lookup addr vm.env.contracts of
     Just c -> not (accountEmpty c)
@@ -1208,7 +1235,7 @@ accountEmpty c =
   && c.balance  == 0
 
 -- * How to finalize a transaction
-finalize :: EVM ()
+finalize :: EVM s ()
 finalize = do
   let
     revertContracts  = use (#tx % #txReversion) >>= assign (#env % #contracts)
@@ -1281,7 +1308,7 @@ finalize = do
       (\k a -> not ((k `elem` touchedAddresses) && accountEmpty a)))
 
 -- | Loads the selected contract as the current contract to execute
-loadContract :: Addr -> EVM ()
+loadContract :: Addr -> State (VM s) ()
 loadContract target =
   preuse (#env % #contracts % ix target % #contractcode) >>=
     \case
@@ -1292,14 +1319,14 @@ loadContract target =
         assign (#state % #code)     targetCode
         assign (#state % #codeContract) target
 
-limitStack :: Int -> EVM () -> EVM ()
+limitStack :: Int -> EVM s () -> EVM s ()
 limitStack n continue = do
   stk <- use (#state % #stack)
   if length stk + n > 1024
     then vmError StackLimitExceeded
     else continue
 
-notStatic :: EVM () -> EVM ()
+notStatic :: EVM s () -> EVM s ()
 notStatic continue = do
   bad <- use (#state % #static)
   if bad
@@ -1307,7 +1334,7 @@ notStatic continue = do
     else continue
 
 -- | Burn gas, failing if insufficient gas is available
-burn :: Word64 -> EVM () -> EVM ()
+burn :: Word64 -> EVM s () -> EVM s ()
 burn n continue = do
   available <- use (#state % #gas)
   if n <= available
@@ -1318,74 +1345,74 @@ burn n continue = do
     else
       vmError (OutOfGas available n)
 
-forceConcrete :: Expr EWord -> String -> (W256 -> EVM ()) -> EVM ()
+forceConcrete :: Expr EWord -> String -> (W256 -> EVM s ()) -> EVM s ()
 forceConcrete n msg continue = case maybeLitWord n of
   Nothing -> do
     vm <- get
     partial $ UnexpectedSymbolicArg vm.state.pc msg (wrap [n])
   Just c -> continue c
 
-forceConcrete2 :: (Expr EWord, Expr EWord) -> String -> ((W256, W256) -> EVM ()) -> EVM ()
+forceConcrete2 :: (Expr EWord, Expr EWord) -> String -> ((W256, W256) -> EVM s ()) -> EVM s ()
 forceConcrete2 (n,m) msg continue = case (maybeLitWord n, maybeLitWord m) of
   (Just c, Just d) -> continue (c, d)
   _ -> do
     vm <- get
     partial $ UnexpectedSymbolicArg vm.state.pc msg (wrap [n, m])
 
-forceConcrete3 :: (Expr EWord, Expr EWord, Expr EWord) -> String -> ((W256, W256, W256) -> EVM ()) -> EVM ()
+forceConcrete3 :: (Expr EWord, Expr EWord, Expr EWord) -> String -> ((W256, W256, W256) -> EVM s ()) -> EVM s ()
 forceConcrete3 (k,n,m) msg continue = case (maybeLitWord k, maybeLitWord n, maybeLitWord m) of
   (Just c, Just d, Just f) -> continue (c, d, f)
   _ -> do
     vm <- get
     partial $ UnexpectedSymbolicArg vm.state.pc msg (wrap [k, n, m])
 
-forceConcrete4 :: (Expr EWord, Expr EWord, Expr EWord, Expr EWord) -> String -> ((W256, W256, W256, W256) -> EVM ()) -> EVM ()
+forceConcrete4 :: (Expr EWord, Expr EWord, Expr EWord, Expr EWord) -> String -> ((W256, W256, W256, W256) -> EVM s ()) -> EVM s ()
 forceConcrete4 (k,l,n,m) msg continue = case (maybeLitWord k, maybeLitWord l, maybeLitWord n, maybeLitWord m) of
   (Just b, Just c, Just d, Just f) -> continue (b, c, d, f)
   _ -> do
     vm <- get
     partial $ UnexpectedSymbolicArg vm.state.pc msg (wrap [k, l, n, m])
 
-forceConcrete5 :: (Expr EWord, Expr EWord, Expr EWord, Expr EWord, Expr EWord) -> String -> ((W256, W256, W256, W256, W256) -> EVM ()) -> EVM ()
+forceConcrete5 :: (Expr EWord, Expr EWord, Expr EWord, Expr EWord, Expr EWord) -> String -> ((W256, W256, W256, W256, W256) -> EVM s ()) -> EVM s ()
 forceConcrete5 (k,l,m,n,o) msg continue = case (maybeLitWord k, maybeLitWord l, maybeLitWord m, maybeLitWord n, maybeLitWord o) of
   (Just a, Just b, Just c, Just d, Just e) -> continue (a, b, c, d, e)
   _ -> do
     vm <- get
     partial $ UnexpectedSymbolicArg vm.state.pc msg (wrap [k, l, m, n, o])
 
-forceConcrete6 :: (Expr EWord, Expr EWord, Expr EWord, Expr EWord, Expr EWord, Expr EWord) -> String -> ((W256, W256, W256, W256, W256, W256) -> EVM ()) -> EVM ()
+forceConcrete6 :: (Expr EWord, Expr EWord, Expr EWord, Expr EWord, Expr EWord, Expr EWord) -> String -> ((W256, W256, W256, W256, W256, W256) -> EVM s ()) -> EVM s ()
 forceConcrete6 (k,l,m,n,o,p) msg continue = case (maybeLitWord k, maybeLitWord l, maybeLitWord m, maybeLitWord n, maybeLitWord o, maybeLitWord p) of
   (Just a, Just b, Just c, Just d, Just e, Just f) -> continue (a, b, c, d, e, f)
   _ -> do
     vm <- get
     partial $ UnexpectedSymbolicArg vm.state.pc msg (wrap [k, l, m, n, o, p])
 
-forceConcreteBuf :: Expr Buf -> String -> (ByteString -> EVM ()) -> EVM ()
+forceConcreteBuf :: Expr Buf -> String -> (ByteString -> EVM s ()) -> EVM s ()
 forceConcreteBuf (ConcreteBuf b) _ continue = continue b
 forceConcreteBuf b msg _ = do
     vm <- get
     partial $ UnexpectedSymbolicArg vm.state.pc msg (wrap [b])
 
 -- * Substate manipulation
-refund :: Word64 -> EVM ()
+refund :: Word64 -> EVM s ()
 refund n = do
   self <- use (#state % #contract)
   pushTo (#tx % #substate % #refunds) (self, n)
 
-unRefund :: Word64 -> EVM ()
+unRefund :: Word64 -> EVM s ()
 unRefund n = do
   self <- use (#state % #contract)
   refs <- use (#tx % #substate % #refunds)
   assign (#tx % #substate % #refunds)
     (filter (\(a,b) -> not (a == self && b == n)) refs)
 
-touchAccount :: Addr -> EVM()
+touchAccount :: Addr -> EVM s ()
 touchAccount = pushTo ((#tx % #substate) % #touchedAccounts)
 
-selfdestruct :: Addr -> EVM()
+selfdestruct :: Addr -> EVM s ()
 selfdestruct = pushTo ((#tx % #substate) % #selfdestructs)
 
-accessAndBurn :: Addr -> EVM () -> EVM ()
+accessAndBurn :: Addr -> EVM s () -> EVM s ()
 accessAndBurn x cont = do
   FeeSchedule {..} <- use (#block % #schedule)
   acc <- accessAccountForGas x
@@ -1394,7 +1421,7 @@ accessAndBurn x cont = do
 
 -- | returns a wrapped boolean- if true, this address has been touched before in the txn (warm gas cost as in EIP 2929)
 -- otherwise cold
-accessAccountForGas :: Addr -> EVM Bool
+accessAccountForGas :: Addr -> EVM s Bool
 accessAccountForGas addr = do
   accessedAddrs <- use (#tx % #substate % #accessedAddresses)
   let accessed = member addr accessedAddrs
@@ -1403,7 +1430,7 @@ accessAccountForGas addr = do
 
 -- | returns a wrapped boolean- if true, this slot has been touched before in the txn (warm gas cost as in EIP 2929)
 -- otherwise cold
-accessStorageForGas :: Addr -> Expr EWord -> EVM Bool
+accessStorageForGas :: Addr -> Expr EWord -> EVM s Bool
 accessStorageForGas addr key = do
   accessedStrkeys <- use (#tx % #substate % #accessedStorageKeys)
   case maybeLitWord key of
@@ -1425,13 +1452,11 @@ cheatCode = unsafeInto (keccak' "hevm cheat code")
 cheat
   :: (?op :: Word8)
   => (W256, W256) -> (W256, W256)
-  -> EVM ()
+  -> EVM s ()
 cheat (inOffset, inSize) (outOffset, outSize) = do
-  mem <- use (#state % #memory)
   vm <- get
-  let
-    abi = readBytes 4 (Lit inOffset) mem
-    input = readMemory (Lit $ inOffset + 4) (Lit $ inSize - 4) vm
+  input <- readMemory (Lit $ inOffset + 4) (Lit $ inSize - 4)
+  abi <- readBytes 4 (Lit 0) <$> readMemory (Lit inOffset) (Lit 4)
   pushTrace $ FrameTrace (CallContext cheatCode cheatCode inOffset inSize (Lit 0) (maybeLitWord abi) input (vm.env.contracts, vm.env.storage) vm.tx.substate)
   case maybeLitWord abi of
     Nothing -> partial $ UnexpectedSymbolicArg vm.state.pc "symbolic cheatcode selector" (wrap [abi])
@@ -1445,9 +1470,9 @@ cheat (inOffset, inSize) (outOffset, outSize) = do
             next
             push 1
 
-type CheatAction = Expr EWord -> Expr EWord -> Expr Buf -> EVM ()
+type CheatAction s = Expr EWord -> Expr EWord -> Expr Buf -> EVM s ()
 
-cheatActions :: Map FunctionSelector CheatAction
+cheatActions :: Map FunctionSelector (CheatAction s)
 cheatActions =
   Map.fromList
     [ action "ffi(string[])" $
@@ -1500,7 +1525,9 @@ cheatActions =
             forceConcrete a "cannot load from a symbolic address" $ \(unsafeInto -> a') ->
               accessStorage a' slot $ \res -> do
                 assign (#state % #returndata % word256At (Lit 0)) res
-                assign (#state % #memory % word256At outOffset) res
+                forceConcrete res "FIXME" $ \res' -> do
+                  let buf = ConcreteBuf $ word256Bytes res'
+                  copyBytesToMemory buf (Lit 32) (Lit 0) outOffset
           _ -> vmError (BadCheatCode sig),
 
       action "sign(uint256,bytes32)" $
@@ -1527,7 +1554,8 @@ cheatActions =
               Just address -> do
                 let expAddr = litAddr address
                 assign (#state % #returndata % word256At (Lit 0)) expAddr
-                assign (#state % #memory % word256At outOffset) expAddr
+                let buf = ConcreteBuf $ word256Bytes (into address)
+                copyBytesToMemory buf (Lit 32) (Lit 0) outOffset
           _ -> vmError (BadCheatCode sig),
 
       action "prank(address)" $
@@ -1545,8 +1573,8 @@ delegateCall
   :: (?op :: Word8)
   => Contract -> Word64 -> Expr EWord -> Expr EWord -> W256 -> W256 -> W256 -> W256 -> W256
   -> [Expr EWord]
-  -> (Addr -> EVM ())
-  -> EVM ()
+  -> (Addr -> EVM s ())
+  -> EVM s ()
 delegateCall this gasGiven xTo xContext xValue xInOffset xInSize xOutOffset xOutSize xs continue =
   forceConcrete2 (xTo, xContext) "cannot delegateCall with symbolic target or context" $
     \((unsafeInto -> xTo'), (unsafeInto -> xContext')) ->
@@ -1562,6 +1590,8 @@ delegateCall this gasGiven xTo xContext xValue xInOffset xInSize xOutOffset xOut
           vm0 <- get
           fetchAccount xTo' $ \target ->
                 burn xGas $ do
+                  calldata <- readMemory (Lit xInOffset) (Lit xInSize)
+                  abi <- maybeLitWord . readBytes 4 (Lit 0) <$> readMemory (Lit xInOffset) (Lit 4)
                   let newContext = CallContext
                                     { target    = xTo'
                                     , context   = xContext'
@@ -1570,11 +1600,8 @@ delegateCall this gasGiven xTo xContext xValue xInOffset xInSize xOutOffset xOut
                                     , codehash  = target.codehash
                                     , callreversion = (vm0.env.contracts, vm0.env.storage)
                                     , subState  = vm0.tx.substate
-                                    , abi =
-                                        if xInSize >= 4
-                                        then (maybeLitWord $ readBytes 4 (Lit xInOffset) vm0.state.memory)
-                                        else Nothing
-                                    , calldata = (readMemory (Lit xInOffset) (Lit xInSize) vm0)
+                                    , abi
+                                    , calldata
                                     }
 
                   pushTrace (FrameTrace newContext)
@@ -1590,16 +1617,17 @@ delegateCall this gasGiven xTo xContext xValue xInOffset xInSize xOutOffset xOut
                         (InitCode _ _) -> InitCode mempty mempty
                         a -> a
 
+                  newMemory <- ConcreteMemory <$> VUnboxed.Mutable.new 0
                   zoom #state $ do
                     assign #gas xGas
                     assign #pc 0
                     assign #code (clearInitCode target.contractcode)
                     assign #codeContract xTo'
                     assign #stack mempty
-                    assign #memory mempty
+                    assign #memory newMemory
                     assign #memorySize 0
                     assign #returndata mempty
-                    assign #calldata (copySlice (Lit xInOffset) (Lit 0) (Lit xInSize) vm0.state.memory mempty)
+                    assign #calldata calldata
 
                   continue xTo'
 
@@ -1616,7 +1644,7 @@ collision c' = case c' of
 
 create :: (?op :: Word8)
   => Addr -> Contract
-  -> W256 -> Word64 -> W256 -> [Expr EWord] -> Addr -> Expr Buf -> EVM ()
+  -> W256 -> Word64 -> W256 -> [Expr EWord] -> Addr -> Expr Buf -> EVM s ()
 create self this xSize xGas xValue xs newAddr initCode = do
   vm0 <- get
   if this.nonce == into (maxBound :: Word64)
@@ -1701,18 +1729,19 @@ create self this xSize xGas xValue xs newAddr initCode = do
           , state   = vm1.state { stack = xs }
           }
 
-        assign #state $
-          blankState
-            & set #contract     newAddr
-            & set #codeContract newAddr
-            & set #code         c
-            & set #callvalue    (Lit xValue)
-            & set #caller       (litAddr self)
-            & set #gas          xGas
+        state <- lift blankState
+        assign #state $ state
+          { contract     = newAddr
+          , codeContract = newAddr
+          , code         = c
+          , callvalue    = Lit xValue
+          , caller       = litAddr self
+          , gas          = xGas
+          }
 
 -- | Replace a contract's code, like when CREATE returns
 -- from the constructor code.
-replaceCode :: Addr -> ContractCode -> EVM ()
+replaceCode :: Addr -> ContractCode -> EVM s ()
 replaceCode target newCode =
   zoom (#env % #contracts % at target) $
     get >>= \case
@@ -1728,29 +1757,28 @@ replaceCode target newCode =
       Nothing ->
         internalError "can't replace code of nonexistent contract"
 
-replaceCodeOfSelf :: ContractCode -> EVM ()
+replaceCodeOfSelf :: ContractCode -> EVM s ()
 replaceCodeOfSelf newCode = do
   vm <- get
   replaceCode vm.state.contract newCode
 
-resetState :: EVM ()
-resetState =
-  modify' $ \vm -> vm { result = Nothing
-                      , frames = []
-                      , state  = blankState }
+resetState :: EVM s ()
+resetState = do
+  state <- lift blankState
+  modify' $ \vm -> vm { result = Nothing, frames = [], state }
 
 -- * VM error implementation
 
-vmError :: EvmError -> EVM ()
+vmError :: EvmError -> EVM s ()
 vmError e = finishFrame (FrameErrored e)
 
-partial :: PartialExec -> EVM ()
+partial :: PartialExec -> EVM s ()
 partial e = assign #result (Just (Unfinished e))
 
 wrap :: Typeable a => [Expr a] -> [SomeExpr]
 wrap = fmap SomeExpr
 
-underrun :: EVM ()
+underrun :: EVM s ()
 underrun = vmError StackUnderrun
 
 -- | A stack frame can be popped in three ways.
@@ -1765,7 +1793,7 @@ data FrameResult
 --
 -- It also handles the case when the current stack frame is the only one;
 -- in this case, we set the final '_result' of the VM execution.
-finishFrame :: FrameResult -> EVM ()
+finishFrame :: FrameResult -> EVM s ()
 finishFrame how = do
   oldVm <- get
 
@@ -1833,7 +1861,7 @@ finishFrame how = do
             -- Case 1: Returning from a call?
             FrameReturned output -> do
               assign (#state % #returndata) output
-              copyCallBytesToMemory output outSize (Lit 0) outOffset
+              copyCallBytesToMemory output outSize outOffset
               reclaimRemainingGasAllowance
               push 1
 
@@ -1843,7 +1871,7 @@ finishFrame how = do
               revertStorage
               revertSubstate
               assign (#state % #returndata) output
-              copyCallBytesToMemory output outSize (Lit 0) outOffset
+              copyCallBytesToMemory output outSize outOffset
               reclaimRemainingGasAllowance
               push 0
 
@@ -1907,8 +1935,8 @@ finishFrame how = do
 accessUnboundedMemoryRange
   :: Word64
   -> Word64
-  -> EVM ()
-  -> EVM ()
+  -> EVM s ()
+  -> EVM s ()
 accessUnboundedMemoryRange _ 0 continue = continue
 accessUnboundedMemoryRange f l continue = do
   m0 <- use (#state % #memorySize)
@@ -1921,8 +1949,8 @@ accessUnboundedMemoryRange f l continue = do
 accessMemoryRange
   :: W256
   -> W256
-  -> EVM ()
-  -> EVM ()
+  -> EVM s ()
+  -> EVM s ()
 accessMemoryRange _ 0 continue = continue
 accessMemoryRange offs sz continue =
   case (,) <$> toWord64 offs <*> toWord64 sz of
@@ -1933,33 +1961,70 @@ accessMemoryRange offs sz continue =
         else accessUnboundedMemoryRange offs64 sz64 continue
 
 accessMemoryWord
-  :: W256 -> EVM () -> EVM ()
+  :: W256 -> EVM s () -> EVM s ()
 accessMemoryWord x = accessMemoryRange x 32
 
 copyBytesToMemory
-  :: Expr Buf -> Expr EWord -> Expr EWord -> Expr EWord -> EVM ()
-copyBytesToMemory bs size xOffset yOffset =
+  :: Expr Buf -> Expr EWord -> Expr EWord -> Expr EWord -> EVM s ()
+copyBytesToMemory bs size srcOffset memOffset =
   if size == Lit 0 then noop
   else do
-    mem <- use (#state % #memory)
-    assign (#state % #memory) $
-      copySlice xOffset yOffset size bs mem
+    gets (.state.memory) >>= \case
+      ConcreteMemory mem ->
+        case (bs, size, srcOffset, memOffset) of
+          (ConcreteBuf b, Lit size', Lit srcOffset', Lit memOffset') -> do
+            let src =
+                  if srcOffset' >= unsafeInto (BS.length b) then
+                    BS.replicate (unsafeInto size') 0
+                  else
+                    BS.take (unsafeInto size') $
+                    padRight (unsafeInto size') $
+                    BS.drop (unsafeInto srcOffset') b
+
+            writeMemory mem (unsafeInto memOffset') src
+          _ -> do
+            -- copy out and move to symbolic memory
+            buf <- freezeMemory mem
+            assign (#state % #memory) $
+              SymbolicMemory $ copySlice srcOffset memOffset size bs buf
+      SymbolicMemory mem ->
+        assign (#state % #memory) $
+          SymbolicMemory $ copySlice srcOffset memOffset size bs mem
 
 copyCallBytesToMemory
-  :: Expr Buf -> Expr EWord -> Expr EWord -> Expr EWord -> EVM ()
-copyCallBytesToMemory bs size xOffset yOffset =
-  if size == Lit 0 then noop
-  else do
-    mem <- use (#state % #memory)
-    assign (#state % #memory) $
-      copySlice xOffset yOffset (Expr.min size (bufLength bs)) bs mem
+  :: Expr Buf -> Expr EWord -> Expr EWord -> EVM s ()
+copyCallBytesToMemory bs size yOffset =
+  copyBytesToMemory bs (Expr.min size (bufLength bs)) (Lit 0) yOffset
 
-readMemory :: Expr EWord -> Expr EWord -> VM -> Expr Buf
-readMemory offset size vm = copySlice offset (Lit 0) size vm.state.memory mempty
+readMemory :: Expr EWord -> Expr EWord -> EVM s (Expr Buf)
+readMemory offset' size' = do
+  vm <- get
+  case vm.state.memory of
+    ConcreteMemory mem -> do
+      case (offset', size') of
+        (Lit offset, Lit size) -> do
+          let memSize :: Word64 = unsafeInto (VUnboxed.Mutable.length mem)
+          if size > Expr.maxBytes ||
+             offset + size > Expr.maxBytes ||
+             offset >= into memSize then
+            -- reads past memory are all zeros
+            pure $ ConcreteBuf $ BS.replicate (unsafeInto size) 0
+          else do
+            let pastEnd = (unsafeInto offset + unsafeInto size) - unsafeInto memSize
+            let fromMemSize = if pastEnd > 0 then unsafeInto size - pastEnd else unsafeInto size
+
+            buf <- VUnboxed.freeze $ VUnboxed.Mutable.slice (unsafeInto offset) fromMemSize mem
+            let dataFromMem = BS.pack $ VUnboxed.toList buf
+            pure $ ConcreteBuf $ dataFromMem <> BS.replicate pastEnd 0
+        _ -> do
+          buf <- freezeMemory mem
+          pure $ copySlice offset' (Lit 0) size' buf mempty
+    SymbolicMemory mem ->
+      pure $ copySlice offset' (Lit 0) size' mem mempty
 
 -- * Tracing
 
-withTraceLocation :: TraceData -> EVM Trace
+withTraceLocation :: TraceData -> EVM s Trace
 withTraceLocation x = do
   vm <- get
   let this = fromJust $ currentContract vm
@@ -1969,19 +2034,19 @@ withTraceLocation x = do
     , opIx = fromMaybe 0 $ this.opIxMap SV.!? vm.state.pc
     }
 
-pushTrace :: TraceData -> EVM ()
+pushTrace :: TraceData -> EVM s ()
 pushTrace x = do
   trace <- withTraceLocation x
   modifying #traces $
     \t -> Zipper.children $ Zipper.insert (Node trace []) t
 
-insertTrace :: TraceData -> EVM ()
+insertTrace :: TraceData -> EVM s ()
 insertTrace x = do
   trace <- withTraceLocation x
   modifying #traces $
     \t -> Zipper.nextSpace $ Zipper.insert (Node trace []) t
 
-popTrace :: EVM ()
+popTrace :: EVM s ()
 popTrace =
   modifying #traces $
     \t -> case Zipper.parent t of
@@ -1994,7 +2059,7 @@ zipperRootForest z =
     Nothing -> Zipper.toForest z
     Just z' -> zipperRootForest (Zipper.nextSpace z')
 
-traceForest :: VM -> Forest Trace
+traceForest :: VM s -> Forest Trace
 traceForest vm = zipperRootForest vm.traces
 
 traceForest' :: Expr End -> Forest Trace
@@ -2011,7 +2076,7 @@ traceContext (Failure _ (Traces _ c) _) = c
 traceContext (ITE {}) = internalError"Internal Error: ITE does not contain a trace"
 traceContext (GVar {}) = internalError"Internal Error: Unexpected GVar"
 
-traceTopLog :: [Expr Log] -> EVM ()
+traceTopLog :: [Expr Log] -> EVM s ()
 traceTopLog [] = noop
 traceTopLog ((LogEntry addr bytes topics) : _) = do
   trace <- withTraceLocation (EventTrace addr bytes topics)
@@ -2021,17 +2086,17 @@ traceTopLog ((GVar _) : _) = internalError "unexpected global variable"
 
 -- * Stack manipulation
 
-push :: W256 -> EVM ()
+push :: W256 -> EVM s ()
 push = pushSym . Lit
 
-pushSym :: Expr EWord -> EVM ()
+pushSym :: Expr EWord -> EVM s ()
 pushSym x = #state % #stack %= (x :)
 
 stackOp1
   :: (?op :: Word8)
   => Word64
   -> ((Expr EWord) -> (Expr EWord))
-  -> EVM ()
+  -> EVM s ()
 stackOp1 cost f =
   use (#state % #stack) >>= \case
     x:xs ->
@@ -2046,7 +2111,7 @@ stackOp2
   :: (?op :: Word8)
   => Word64
   -> (((Expr EWord), (Expr EWord)) -> (Expr EWord))
-  -> EVM ()
+  -> EVM s ()
 stackOp2 cost f =
   use (#state % #stack) >>= \case
     x:y:xs ->
@@ -2060,7 +2125,7 @@ stackOp3
   :: (?op :: Word8)
   => Word64
   -> (((Expr EWord), (Expr EWord), (Expr EWord)) -> (Expr EWord))
-  -> EVM ()
+  -> EVM s ()
 stackOp3 cost f =
   use (#state % #stack) >>= \case
     x:y:z:xs ->
@@ -2072,12 +2137,12 @@ stackOp3 cost f =
 
 -- * Bytecode data functions
 
-use' :: (VM -> a) -> EVM a
+use' :: (VM s -> a) -> EVM s a
 use' f = do
   vm <- get
   pure (f vm)
 
-checkJump :: Int -> [Expr EWord] -> EVM ()
+checkJump :: Int -> [Expr EWord] -> EVM s ()
 checkJump x xs = do
   vm <- get
   case isValidJumpDest vm x of
@@ -2086,7 +2151,7 @@ checkJump x xs = do
       #state % #pc .= x
     False -> vmError BadJumpDestination
 
-isValidJumpDest :: VM -> Int -> Bool
+isValidJumpDest :: VM s -> Int -> Bool
 isValidJumpDest vm x = let
     code = vm.state.code
     self = vm.state.codeContract
@@ -2148,7 +2213,7 @@ mkOpIxMap (RuntimeCode (SymbolicRuntimeCode ops))
           {- PUSH data. -}        (n - 1,        i + 1, j,     m >> SV.write v i j)
 
 
-vmOp :: VM -> Maybe Op
+vmOp :: VM s -> Maybe Op
 vmOp vm =
   let i  = vm ^. #state % #pc
       code' = vm ^. #state % #code
@@ -2163,7 +2228,7 @@ vmOp vm =
      then Nothing
      else Just (readOp op pushdata)
 
-vmOpIx :: VM -> Maybe Int
+vmOpIx :: VM s -> Maybe Int
 vmOpIx vm =
   do self <- currentContract vm
      self.opIxMap SV.!? vm.state.pc
@@ -2195,7 +2260,7 @@ mkCodeOps contractCode =
 costOfCall
   :: FeeSchedule Word64
   -> Bool -> W256 -> Word64 -> Word64 -> Addr
-  -> EVM (Word64, Word64)
+  -> EVM s (Word64, Word64)
 costOfCall (FeeSchedule {..}) recipientExists xValue availableGas xGas target = do
   acc <- accessAccountForGas target
   let call_base_gas = if acc then g_warm_storage_read else g_cold_account_access
@@ -2314,7 +2379,7 @@ toBuf (InitCode ops args) = ConcreteBuf ops <> args
 toBuf (RuntimeCode (ConcreteRuntimeCode ops)) = ConcreteBuf ops
 toBuf (RuntimeCode (SymbolicRuntimeCode ops)) = Expr.fromList ops
 
-codeloc :: EVM CodeLocation
+codeloc :: EVM s CodeLocation
 codeloc = do
   vm <- get
   pure (vm.state.contract, vm.state.pc)
@@ -2329,3 +2394,22 @@ allButOne64th n = n - div n 64
 
 log2 :: FiniteBits b => b -> Int
 log2 x = finiteBitSize x - 1 - countLeadingZeros x
+
+writeMemory :: MutableMemory s -> Int -> ByteString -> EVM s ()
+writeMemory memory offset buf = do
+  memory' <- expandMemory (offset + BS.length buf)
+  mapM_ (uncurry (VUnboxed.Mutable.write memory'))
+        (zip [offset..] (BS.unpack buf))
+  where
+  expandMemory targetSize = do
+    let toAlloc = targetSize - VUnboxed.Mutable.length memory
+    if toAlloc > 0 then do
+      memory' <- VUnboxed.Mutable.grow memory toAlloc
+      assign (#state % #memory) (ConcreteMemory memory')
+      pure memory'
+    else
+      pure memory
+
+freezeMemory :: MutableMemory s -> EVM s (Expr Buf)
+freezeMemory memory =
+  ConcreteBuf . BS.pack . VUnboxed.toList <$> VUnboxed.freeze memory

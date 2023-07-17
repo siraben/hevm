@@ -13,9 +13,10 @@ import EVM.Transaction
 import EVM.TTY qualified as TTY
 import EVM.Types hiding (Block, Case)
 
-import Control.Arrow ((***), (&&&))
 import Optics.Core
+import Control.Arrow ((***), (&&&))
 import Control.Monad
+import Control.Monad.ST (RealWorld, stToIO)
 import Data.Aeson ((.:), (.:?), FromJSON (..))
 import Data.Aeson qualified as JSON
 import Data.Aeson.Types qualified as JSON
@@ -30,12 +31,12 @@ import Data.Word (Word64)
 import System.Environment (lookupEnv, getEnv)
 import System.FilePath.Find qualified as Find
 import System.FilePath.Posix (makeRelative, (</>))
+import Witch (into, unsafeInto)
 import Witherable (Filterable, catMaybes)
 
 import Test.Tasty
 import Test.Tasty.ExpectedFailure
 import Test.Tasty.HUnit
-import Witch (into, unsafeInto)
 
 type Storage = Map W256 W256
 
@@ -131,7 +132,7 @@ ciProblematicTests = Map.fromList
 
 runVMTest :: Bool -> (String, Case) -> IO ()
 runVMTest diffmode (_name, x) = do
-  let vm0 = vmForCase x
+  vm0 <- vmForCase x
   result <- EVM.Stepper.interpret (EVM.Fetch.zero 0 (Just 0)) vm0 EVM.Stepper.runFully
   maybeReason <- checkExpectation diffmode x result
   forM_ maybeReason assertFailure
@@ -146,7 +147,7 @@ debugVMTest file test = do
   let x = case filter (\(name, _) -> name == test) $ Map.toList allTests of
         [(_, x')] -> x'
         _ -> internalError "test not found"
-  let vm0 = vmForCase x
+  vm0 <- vmForCase x
   result <- withSolvers Z3 0 Nothing $ \solvers ->
     TTY.runFromVM solvers Nothing Nothing emptyDapp vm0
   void $ checkExpectation True x result
@@ -157,7 +158,7 @@ splitEithers =
   . (fmap fst &&& fmap snd)
   . (fmap (preview _Left &&& preview _Right))
 
-checkStateFail :: Bool -> Case -> VM -> (Bool, Bool, Bool, Bool) -> IO String
+checkStateFail :: Bool -> Case -> VM RealWorld -> (Bool, Bool, Bool, Bool) -> IO String
 checkStateFail diff x vm (okMoney, okNonce, okData, okCode) = do
   let
     printContracts :: Map Addr (Contract, Storage) -> IO ()
@@ -190,7 +191,7 @@ checkStateFail diff x vm (okMoney, okNonce, okData, okCode) = do
     printContracts actual
   pure (unwords reason)
 
-checkExpectation :: Bool -> Case -> VM -> IO (Maybe String)
+checkExpectation :: Bool -> Case -> VM RealWorld -> IO (Maybe String)
 checkExpectation diff x vm = do
   let expectation = x.testExpectation
       (okState, b2, b3, b4, b5) = checkExpectedContracts vm expectation
@@ -217,7 +218,7 @@ checkExpectation diff x vm = do
       (RuntimeCode a', RuntimeCode b') -> a' == b'
       _ -> internalError "unexpected code"
 
-checkExpectedContracts :: VM -> Map Addr (Contract, Storage) -> (Bool, Bool, Bool, Bool, Bool)
+checkExpectedContracts :: VM RealWorld -> Map Addr (Contract, Storage) -> (Bool, Bool, Bool, Bool, Bool)
 checkExpectedContracts vm expected =
   let cs = zipWithStorages $ vm ^. #env % #contracts -- . to (fmap (clearZeroStorage.clearOrigStorage))
       expectedCs = clearStorage <$> expected
@@ -444,15 +445,14 @@ checkTx tx block prestate = do
   else
     return prestate
 
-vmForCase :: Case -> VM
-vmForCase x =
+vmForCase :: Case -> IO (VM RealWorld)
+vmForCase x = do
   let
     a = x.checkContracts
     cs = Map.map fst a
     st = Map.mapKeys into $ Map.map snd a
-    vm = makeVm x.vmOpts
-      & set (#env % #contracts) cs
-      & set (#env % #storage) (ConcreteStore st)
-      & set (#env % #origStorage) st
-  in
-    initTx vm
+  vm <- stToIO $ makeVm x.vmOpts
+      <&> set (#env % #contracts) cs
+      <&> set (#env % #storage) (ConcreteStore st)
+      <&> set (#env % #origStorage) st
+  pure $ initTx vm

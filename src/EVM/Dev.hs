@@ -31,6 +31,7 @@ import EVM.Types
 import EVM.UnitTest
 import GHC.Conc
 import Witch (unsafeInto)
+import Control.Monad.ST (RealWorld, ST, stToIO)
 
 checkEquiv :: (Typeable a) => Expr a -> Expr a -> IO ()
 checkEquiv a b = withSolvers Z3 1 Nothing $ \s -> do
@@ -49,7 +50,7 @@ runDappTest root =
       res <- unitTest opts contracts Nothing
       unless res exitFailure
 
-testOpts :: SolverGroup -> FilePath -> FilePath -> IO UnitTestOptions
+testOpts :: SolverGroup -> FilePath -> FilePath -> IO (UnitTestOptions RealWorld)
 testOpts solvers root testFile = do
   srcInfo <- readSolc DappTools root testFile >>= \case
     Left e -> internalError e
@@ -361,7 +362,7 @@ vat = do
           |]
   fmap fromJust (solcRuntime "Vat" src)
 
-initVm :: ByteString -> VM
+initVm :: ByteString -> ST s (VM s)
 initVm bs = vm
   where
     contractCode = RuntimeCode (ConcreteRuntimeCode bs)
@@ -403,7 +404,9 @@ initVm bs = vm
 
 -- | Builds the Expr for the given evm bytecode object
 buildExpr :: SolverGroup -> ByteString -> IO (Expr End)
-buildExpr solvers bs = interpret (Fetch.oracle solvers Nothing) Nothing 1 Naive (initVm bs) runExpr
+buildExpr solvers bs = do
+  vm <- stToIO $ initVm bs
+  interpret (Fetch.oracle solvers Nothing) Nothing 1 Naive vm runExpr
 
 dai :: IO ByteString
 dai = do
