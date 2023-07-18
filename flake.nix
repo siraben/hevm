@@ -29,12 +29,12 @@
           z3
           cvc5
           git
-          foundry.defaultPackage.${system}
+          # foundry.defaultPackage.${system}
         ];
 
-        secp256k1-static = stripDylib (pkgs.secp256k1.overrideAttrs (attrs: {
-          configureFlags = attrs.configureFlags ++ [ "--enable-static" ];
-        }));
+        # secp256k1-static = stripDylib (pkgs.secp256k1.overrideAttrs (attrs: {
+        #   configureFlags = attrs.configureFlags; # ++ [ "--enable-static" ];
+        # }));
 
         hevmUnwrapped = (with pkgs; lib.pipe (
           haskellPackages.callCabal2nix "hevm" ./. {
@@ -50,12 +50,12 @@
             (haskell.lib.compose.appendConfigureFlags (
               [ "-fci"
                 "-O2"
-                "--extra-lib-dirs=${stripDylib (pkgs.gmp.override { withStatic = true; })}/lib"
-                "--extra-lib-dirs=${stripDylib secp256k1-static}/lib"
-                "--extra-lib-dirs=${stripDylib (libff.override { enableStatic = true; })}/lib"
-                "--extra-lib-dirs=${zlib.static}/lib"
-                "--extra-lib-dirs=${stripDylib (libffi.overrideAttrs (_: { dontDisableStatic = true; }))}/lib"
-                "--extra-lib-dirs=${stripDylib (ncurses.override { enableStatic = true; })}/lib"
+                # "--extra-lib-dirs=${stripDylib (pkgs.gmp.override { withStatic = true; })}/lib"
+                # "--extra-lib-dirs=${stripDylib secp256k1-static}/lib"
+                # "--extra-lib-dirs=${stripDylib (libff.override { enableStatic = true; })}/lib"
+                # "--extra-lib-dirs=${zlib.static}/lib"
+                # "--extra-lib-dirs=${stripDylib (libffi.overrideAttrs (_: { dontDisableStatic = true; }))}/lib"
+                # "--extra-lib-dirs=${stripDylib (ncurses.override { enableStatic = true; })}/lib"
               ]
               ++ lib.optionals stdenv.isLinux [
                 "--enable-executable-static"
