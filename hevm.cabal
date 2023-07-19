@@ -391,6 +391,7 @@ benchmark bench
   --    extra-libraries: stdc++
   other-modules:
     Paths_hevm
+    Bytecodes
   autogen-modules:
     Paths_hevm
   build-depends:
@@ -405,4 +406,6 @@ benchmark bench
     filemanip,
     filepath,
     containers,
-    mtl
+    mtl,
+    aeson,
+    process
