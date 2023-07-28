@@ -3,13 +3,9 @@
 
 module Main where
 
-import Control.Monad
-import Control.Monad.State
 import Data.Aeson qualified as JSON
-import Data.ByteString (ByteString)
 import Data.ByteString.UTF8 as BSU 
 import Data.ByteString qualified as ByteString
-import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Either
 import Data.Function
 import Data.Map.Strict qualified as Map
@@ -23,23 +19,17 @@ import EVM.Fetch qualified as Fetch
 import EVM.Format
 import EVM.Sign
 import EVM.Solidity
-import EVM.Stepper
 import EVM.Stepper qualified as Stepper
-import EVM.Test.BlockchainTests qualified as BCTests
 import EVM.Test.Tracing
 import EVM.Transaction qualified
 import EVM.Types
 import EVM.UnitTest
 import GHC.Word
 import System.Directory (setCurrentDirectory)
-import System.Environment (getEnv)
 import System.FilePath.Find qualified as Find
-import System.FilePath.Posix
 import System.IO.Temp
 import System.Process (readProcessWithExitCode)
-import Test.Tasty (localOption, withResource)
 import Test.Tasty.Bench
-import qualified Data.Aeson.Key as ByteString
 
 -- benchmark hevm and EVM tool on the folder called benchmarks
 -- using tasty-bench
@@ -96,24 +86,16 @@ vm0Opts c =
 
 benchCode :: ByteString -> Benchmark
 benchCode bs = bench "interpret" $ nfIO $ do
-  result <- Stepper.interpret (Fetch.zero 0 Nothing) (vmFromByteString bs) Stepper.execFully
-  case result of
-    Left _ -> pure False
-    Right _ -> pure True
+  isRight <$> Stepper.interpret (Fetch.zero 0 Nothing) (vmFromByteString bs) Stepper.execFully
 
 benchFile :: FilePath -> Benchmark
 benchFile path = bench (show path) $ nfIO $ do
   bs <- strip0x <$> ByteString.readFile path
-  result <- Stepper.interpret (Fetch.zero 0 Nothing) (vmFromByteString bs) Stepper.execFully
-  case result of
-    Left _ -> pure False
-    Right _ -> pure True
+  isRight <$> Stepper.interpret (Fetch.zero 0 Nothing) (vmFromByteString bs) Stepper.execFully
 
 -- bench every .bin file in a given folder
 benchFolder :: FilePath -> IO [Benchmark]
-benchFolder path = do
-  files <- Find.find Find.always (Find.extension Find.==? ".bin") path
-  pure $ map benchFile files
+benchFolder path = map benchFile <$> Find.find Find.always (Find.extension Find.==? ".bin") path
 
 vmOptsToTestVMParams :: VMOpts -> TestVMParams
 vmOptsToTestVMParams v =
@@ -145,17 +127,6 @@ callMainForBytecode bs = do
   Stepper.interpret (Fetch.zero 0 Nothing) vm (Stepper.evm (abiCall (vmOptsToTestVMParams (vm0Opts (initialContract (RuntimeCode (ConcreteRuntimeCode bs))))) (Left ("main()", emptyAbi))) >> Stepper.execFully)
 
 benchMain (name, bs) = bench name $ nfIO $ isRight <$> callMainForBytecode bs
-
-main :: IO ()
-main = do
-  --l <- mapM (\n -> (show n,) <$> bytecode1 n) [2 ^ n | n <- [1 .. 10]]
-  -- p <- mapM (\n -> (show n,) <$> primes n) [2 ^ n | n <- [1 .. 10]]
-  -- b <- mapM (\n -> (show n,) <$> primes n) [2 ^ n | n <- [1 .. 10]]
-  long <- mapM (\n -> (show n,) <$> primes n) [7 ^ n | n <- [1 .. 10]]
-  defaultMain [-- bgroup "benches-map" (benchMain <$> l),
-               -- bgroup "benches-primes" (benchMain <$> p),
-               bgroup "benches-long" (benchMain <$> long)
-               ]
 
 benchBytecodes = map (\x -> bench "bytecode" $ nfIO $ isRight <$> (Stepper.interpret (Fetch.zero 0 Nothing) (vmFromRawByteString x) Stepper.execFully))
 
@@ -255,21 +226,37 @@ benchEVMToolFolder path = do
   files <- Find.find Find.always (Find.extension Find.==? ".bin") path
   mapM benchEVMTool files
 
-bytecode1 :: Int -> IO ByteString
-bytecode1 n = do
+main :: IO ()
+main = do
+  l <- mapM (\n -> (show n,) <$> simple_loop n)  [2 ^ n | n <- [1 .. 14]]
+  p <- mapM (\n -> (show n,) <$> primes n)       [2 ^ n | n <- [1 .. 14]]
+  long <- mapM (\n -> (show n,) <$> primes n)    [2 ^ n | n <- [1 .. 14]]
+  h <- mapM (\n -> (show n,) <$> hashes n)       [2 ^ n | n <- [1 .. 14]]
+  badmem <- mapM (\n -> (show n,) <$> hashmem n) [2 ^ n | n <- [1 .. 14]]
+  defaultMain [bgroup "benches-loop" (benchMain <$> l),
+               bgroup "benches-primes" (benchMain <$> p),
+               bgroup "benches-long" (benchMain <$> long),
+               bgroup "benches-hashes" (benchMain <$> h),
+               bgroup "benches-hashmem" (benchMain <$> badmem)
+               ]
+
+-- Loop that adds up n numbers
+simple_loop :: Int -> IO ByteString
+simple_loop n = do
   let src =
         [i|
           contract A {
-            mapping (uint => uint) public map;
             function main() public {
+              uint256 acc = 0;
               for (uint i = 0; i < ${n}; i++) {
-                map[i] = i;
+                acc += i;
               }
             }
           }
         |]
   fmap fromJust (solcRuntime "A" src)
 
+-- Computes prime numbers and stores them up to n.
 primes :: Int -> IO ByteString
 primes n = do
   let src =
@@ -303,5 +290,42 @@ primes n = do
         |]
   fmap fromJust (solcRuntime "A" src)
 
+-- Program that is as long as the input
 longFile :: Int -> ByteString
 longFile n = hexByteString "bytes" (BSU.fromString ("600a" ++ concat (replicate n ("600101"))))
+
+-- Program that repeatedly hashes a value
+hashes :: Int -> IO ByteString
+hashes n = do
+  let src =
+        [i|
+          contract A {
+            function main() public {
+              bytes32 h = 0;
+              for (uint i = 0; i < ${n}; i++) {
+                h = keccak256(abi.encode(h));
+              }
+            }
+          }
+        |]
+  fmap fromJust (solcRuntime "A" src)
+
+-- Program that repeatedly hashes a value and stores it in a map
+hashmem :: Int -> IO ByteString
+hashmem n = do
+  let src =
+        [i|
+          contract A {
+            mapping (uint256 => uint256) public map;
+            function main() public {
+              uint256 h = 0;
+              for (uint i = 0; i < ${n}; i++) {
+                uint256 x = h;
+                h = uint256(keccak256(abi.encode(h)));
+                map[x] = h;
+              }
+            }
+          }
+        |]
+  fmap fromJust (solcRuntime "A" src)
+
