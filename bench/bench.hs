@@ -61,7 +61,7 @@ vm0Opts c =
   VMOpts
     { contract = c,
       calldata = (ConcreteBuf "", []),
-      value = Lit 0,
+      value = Lit 0xfffffffffffff, -- balance
       address = 0xacab,
       caller = litAddr 0,
       origin = 0,
@@ -125,6 +125,7 @@ vmOptsToTestVMParams v =
 callMainForBytecode bs = do
   let vm = vmFromRawByteString bs
   Stepper.interpret (Fetch.zero 0 Nothing) vm (Stepper.evm (abiCall (vmOptsToTestVMParams (vm0Opts (initialContract (RuntimeCode (ConcreteRuntimeCode bs))))) (Left ("main()", emptyAbi))) >> Stepper.execFully)
+
 
 benchMain (name, bs) = bench name $ nfIO $ isRight <$> callMainForBytecode bs
 
@@ -233,12 +234,16 @@ main = do
   long <- mapM (\n -> (show n,) <$> primes n)    [2 ^ n | n <- [1 .. 14]]
   h <- mapM (\n -> (show n,) <$> hashes n)       [2 ^ n | n <- [1 .. 14]]
   badmem <- mapM (\n -> (show n,) <$> hashmem n) [2 ^ n | n <- [1 .. 14]]
+  balanceTransfer <- mapM (\n -> (show n,) <$> balanceTransfer n) [2 ^ n | n <- [1 .. 14]]
+  funcCall <- mapM (\n -> (show n,) <$> funcCall n) [2 ^ n | n <- [1 .. 14]]
   defaultMain [bgroup "benches-loop" (benchMain <$> l),
                bgroup "benches-primes" (benchMain <$> p),
                bgroup "benches-long" (benchMain <$> long),
                bgroup "benches-hashes" (benchMain <$> h),
-               bgroup "benches-hashmem" (benchMain <$> badmem)
-               ]
+               bgroup "benches-hashmem" (benchMain <$> badmem),
+               bgroup "benches-balance_transfer" (benchMain <$> balanceTransfer),
+               bgroup "benches-func_call" (benchMain <$> funcCall)
+              ]
 
 -- Loop that adds up n numbers
 simple_loop :: Int -> IO ByteString
@@ -329,3 +334,35 @@ hashmem n = do
         |]
   fmap fromJust (solcRuntime "A" src)
 
+balanceTransfer :: Int -> IO ByteString
+balanceTransfer n = do
+  let src =
+        [i|
+          contract A {
+            function main() public {
+              address payable to = payable(address(0x8A8eAFb1cf62BfBeb1741769DAE1a9dd47996192)); 
+              for (uint i = 0; i < ${n}; i++) {
+                to.transfer(1);
+              }
+            }
+          }
+        |]
+  fmap fromJust (solcRuntime "A" src)
+
+funcCall :: Int -> IO ByteString
+funcCall n = do
+  let src =
+        [i|
+          contract A {
+            uint256 public acc;
+            function f(uint256 x) public {
+              acc += x;
+            }
+            function main() public {
+              for (uint i = 0; i < ${n}; i++) {
+                f(i);
+              }
+            }
+          }
+        |]
+  fmap fromJust (solcRuntime "A" src)
