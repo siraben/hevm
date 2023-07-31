@@ -184,8 +184,7 @@ library
     stm                               >= 2.5.0 && < 2.6.0,
     spawn                             >= 0.3 && < 0.4,
     filepattern                       >= 0.1.2 && < 0.2,
-    witch                             >= 1.1 && < 1.3,
-    githash
+    witch                             >= 1.1 && < 1.3
   if !os(windows)
     build-depends:
       brick                           >= 1.4 && < 2.0,
@@ -367,6 +366,38 @@ benchmark bench
   hs-source-dirs:
     bench
   ghc-options:
+    -O2
+  if os(darwin)
+     extra-libraries: c++
+  else
+     extra-libraries: stdc++
+  other-modules:
+    Paths_hevm
+  autogen-modules:
+    Paths_hevm
+  build-depends:
+    base,
+    tasty-bench,
+    tasty,
+    bytestring,
+    text,
+    hevm,
+    here,
+    test-utils,
+    filemanip,
+    filepath,
+    containers,
+    mtl
+
+benchmark bench-perf
+  import: shared
+  type:
+    exitcode-stdio-1.0
+  main-is:
+    bench-perf.hs
+  hs-source-dirs:
+    bench
+  ghc-options:
     -O2 -threaded -with-rtsopts=-N
   if os(darwin)
      extra-libraries: c++
@@ -376,7 +407,6 @@ benchmark bench
      extra-libraries: stdc++
   other-modules:
     Paths_hevm
-    Bytecodes
   autogen-modules:
     Paths_hevm
   build-depends:
@@ -398,19 +428,19 @@ benchmark bench
     temporary,
     utf8-string
 
-benchmark bench-dev
+benchmark bench-perf-dev
   import: shared
   type:
     exitcode-stdio-1.0
   main-is:
-    bench.hs
+    bench-perf.hs
   hs-source-dirs:
     bench
   ghc-options:
     -O2 -threaded -with-rtsopts=-N
+  extra-libraries: stdc++
   other-modules:
     Paths_hevm
-    Bytecodes
   autogen-modules:
     Paths_hevm
   build-depends:
