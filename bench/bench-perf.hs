@@ -221,23 +221,24 @@ benchEVMToolFolder path = do
   files <- Find.find Find.always (Find.extension Find.==? ".bin") path
   mapM benchEVMTool files
 
+mkBench :: (Int -> IO a) -> [Int] -> IO [(String, a)]
+mkBench f l = mapM (\n -> (show n,) <$> f n) l
+
 main :: IO ()
 main = do
-  l <- mapM (\n -> (show n,) <$> simple_loop n)  [2 ^ n | n <- [1 .. 14]]
-  p <- mapM (\n -> (show n,) <$> primes n)       [2 ^ n | n <- [1 .. 14]]
-  long <- mapM (\n -> (show n,) <$> primes n)    [2 ^ n | n <- [1 .. 14]]
-  h <- mapM (\n -> (show n,) <$> hashes n)       [2 ^ n | n <- [1 .. 14]]
-  badmem <- mapM (\n -> (show n,) <$> hashmem n) [2 ^ n | n <- [1 .. 14]]
-  balanceTransfer <- mapM (\n -> (show n,) <$> balanceTransfer n) [2 ^ n | n <- [1 .. 14]]
-  funcCall <- mapM (\n -> (show n,) <$> funcCall n) [2 ^ n | n <- [1 .. 14]]
-  defaultMain [bgroup "benches-loop" (benchMain <$> l),
-               bgroup "benches-primes" (benchMain <$> p),
-               bgroup "benches-long" (benchMain <$> long),
-               bgroup "benches-hashes" (benchMain <$> h),
-               bgroup "benches-hashmem" (benchMain <$> badmem),
-               bgroup "benches-balance_transfer" (benchMain <$> balanceTransfer),
-               bgroup "benches-func_call" (benchMain <$> funcCall)
-              ]
+  let f (name, prog) = do
+        ll <- mkBench prog [2 ^ n | n <- [1 .. 14]]
+        pure $ bgroup name (benchMain <$> ll)
+  let benchmarks = [ ("loop", simple_loop)
+                   , ("primes", primes)
+                   , ("longFile", longFile)
+                   , ("hashes", hashes)
+                   , ("hashmem", hashmem)
+                   , ("balanceTransfer", balanceTransfer)
+                   , ("funcCall", funcCall)
+                   ]
+  defaultMain =<< mapM f benchmarks
+  
 
 -- Loop that adds up n numbers
 simple_loop :: Int -> IO ByteString
@@ -290,8 +291,8 @@ primes n = do
   fmap fromJust (solcRuntime "A" src)
 
 -- Program that is as long as the input
-longFile :: Int -> ByteString
-longFile n = hexByteString "bytes" (BSU.fromString ("600a" ++ concat (replicate n ("600101"))))
+longFile :: Int -> IO ByteString
+longFile n = pure $ hexByteString "bytes" (BSU.fromString ("600a" ++ concat (replicate n ("600101"))))
 
 -- Program that repeatedly hashes a value
 hashes :: Int -> IO ByteString
@@ -321,7 +322,7 @@ hashmem n = do
               for (uint i = 0; i < ${n}; i++) {
                 uint256 x = h;
                 h = uint256(keccak256(abi.encode(h)));
-                map[x % m] = h;
+                map[x] = h;
               }
             }
           }
