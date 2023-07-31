@@ -35,14 +35,7 @@ import Test.Tasty.Bench
 -- using tasty-bench
 
 vmFromByteString :: ByteString -> VM
-vmFromByteString bs =
-  bs
-    & hexByteString "bytes"
-    & ConcreteRuntimeCode
-    & RuntimeCode
-    & initialContract
-    & vm0
-    & EVM.Transaction.initTx
+vmFromByteString = vmFromRawByteString . hexByteString "bytes"
 
 vmFromRawByteString :: ByteString -> VM
 vmFromRawByteString bs =
@@ -97,6 +90,7 @@ benchFile path = bench (show path) $ nfIO $ do
 benchFolder :: FilePath -> IO [Benchmark]
 benchFolder path = map benchFile <$> Find.find Find.always (Find.extension Find.==? ".bin") path
 
+-- why do we need this?
 vmOptsToTestVMParams :: VMOpts -> TestVMParams
 vmOptsToTestVMParams v =
   TestVMParams
@@ -327,7 +321,7 @@ hashmem n = do
               for (uint i = 0; i < ${n}; i++) {
                 uint256 x = h;
                 h = uint256(keccak256(abi.encode(h)));
-                map[x] = h;
+                map[x % m] = h;
               }
             }
           }
