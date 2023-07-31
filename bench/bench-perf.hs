@@ -231,11 +231,11 @@ main = do
         pure $ bgroup name (benchMain <$> ll)
   let benchmarks = [ ("loop", simple_loop)
                    , ("primes", primes)
-                   , ("longFile", longFile)
                    , ("hashes", hashes)
                    , ("hashmem", hashmem)
                    , ("balanceTransfer", balanceTransfer)
                    , ("funcCall", funcCall)
+                   , ("contractCreation", contractCreation)
                    ]
   defaultMain =<< mapM f benchmarks
   
@@ -289,10 +289,6 @@ primes n = do
           }
         |]
   fmap fromJust (solcRuntime "A" src)
-
--- Program that is as long as the input
-longFile :: Int -> IO ByteString
-longFile n = pure $ hexByteString "bytes" (BSU.fromString ("600a" ++ concat (replicate n ("600101"))))
 
 -- Program that repeatedly hashes a value
 hashes :: Int -> IO ByteString
@@ -356,6 +352,23 @@ funcCall n = do
             function main() public {
               for (uint i = 0; i < ${n}; i++) {
                 f(i);
+              }
+            }
+          }
+        |]
+  fmap fromJust (solcRuntime "A" src)
+
+-- creates n contracts
+contractCreation :: Int -> IO ByteString
+contractCreation n = do
+  let src =
+        [i|
+          contract B { }
+          contract A {
+            B public b;
+            function main() public {
+              for (uint i = 0; i < ${n}; i++) {
+                b = new B();
               }
             }
           }
